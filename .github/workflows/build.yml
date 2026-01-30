@@ -1,0 +1,184 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  RUST_CACHE_PREFIX: "v0-rust"
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/master' }}
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    env:
+      clang: "17"
+      php_version: "8.5"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.php_version }}
+        env:
+          debug: true
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          components: rustfmt, clippy
+          toolchain: stable
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: ${{ env.RUST_CACHE_PREFIX }}
+
+      - name: Cache LLVM and Clang
+        id: cache-llvm
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/llvm-${{ env.clang }}
+          key: ubuntu-latest-llvm-${{ env.clang }}
+
+      - name: Setup LLVM & Clang
+        id: clang
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: ${{ env.clang }}
+          directory: ${{ runner.temp }}/llvm-${{ env.clang }}
+          cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+
+      - name: Configure Clang
+        run: |
+          echo "LIBCLANG_PATH=${{ runner.temp }}/llvm-${{ env.clang }}/lib" >> $GITHUB_ENV
+          echo "LLVM_VERSION=${{ steps.clang.outputs.version }}" >> $GITHUB_ENV
+          echo "LLVM_CONFIG_PATH=${{ runner.temp }}/llvm-${{ env.clang }}/bin/llvm-config" >> $GITHUB_ENV
+
+      - name: Run rustfmt
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  build:
+    name: ${{ matrix.os }} / PHP ${{ matrix.php }} / ${{ matrix.phpts }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux amd64 - PHP 8.5 ZTS
+          - os: linux
+            runner: ubuntu-latest
+            php: "8.5"
+            phpts: ts
+            rust: stable
+            clang: "17"
+
+          # Linux amd64 - PHP 8.5 NTS
+          - os: linux
+            runner: ubuntu-latest
+            php: "8.5"
+            phpts: nts
+            rust: stable
+            clang: "17"
+
+          # macOS arm64 - PHP 8.5 ZTS
+          - os: macos
+            runner: macos-latest
+            php: "8.5"
+            phpts: ts
+            rust: stable
+            clang: ""
+
+          # macOS arm64 - PHP 8.5 NTS
+          - os: macos
+            runner: macos-latest
+            php: "8.5"
+            phpts: nts
+            rust: stable
+            clang: ""
+
+          # Windows x86_64 - PHP 8.5 ZTS
+          - os: windows
+            runner: windows-latest
+            php: "8.5"
+            phpts: ts
+            rust: nightly
+            clang: ""
+
+          # Windows x86_64 - PHP 8.5 NTS
+          - os: windows
+            runner: windows-latest
+            php: "8.5"
+            phpts: nts
+            rust: nightly
+            clang: ""
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+        env:
+          phpts: ${{ matrix.phpts }}
+          debug: true
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: rustfmt, clippy
+
+      - run: rustup show
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: ${{ env.RUST_CACHE_PREFIX }}
+
+      # LLVM & Clang (Linux only)
+      - name: Cache LLVM and Clang
+        id: cache-llvm
+        uses: actions/cache@v4
+        if: matrix.os == 'linux'
+        with:
+          path: ${{ runner.temp }}/llvm-${{ matrix.clang }}
+          key: ${{ matrix.runner }}-llvm-${{ matrix.clang }}
+
+      - name: Setup LLVM & Clang
+        id: clang
+        uses: KyleMayes/install-llvm-action@v2
+        if: matrix.os == 'linux'
+        with:
+          version: ${{ matrix.clang }}
+          directory: ${{ runner.temp }}/llvm-${{ matrix.clang }}
+          cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+
+      - name: Configure Clang
+        if: matrix.os == 'linux'
+        run: |
+          echo "LIBCLANG_PATH=${{ runner.temp }}/llvm-${{ matrix.clang }}/lib" >> $GITHUB_ENV
+          echo "LLVM_VERSION=${{ steps.clang.outputs.version }}" >> $GITHUB_ENV
+          echo "LLVM_CONFIG_PATH=${{ runner.temp }}/llvm-${{ matrix.clang }}/bin/llvm-config" >> $GITHUB_ENV
+
+      # Build
+      - name: Build
+        run: cargo build --release
+
+      # Test
+      - name: Test
+        run: cargo test --release --no-fail-fast

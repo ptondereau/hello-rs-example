@@ -1,0 +1,16 @@
+[package]
+name = "hello-php-rs"
+description = "A simple PHP extension built with ext-php-rs"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["Pierre Tondereau <pierre.tondereau@protonmail.com>"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ext-php-rs = "0.15"
+
+[profile.release]
+strip = "debuginfo"
